@@ -1,80 +1,76 @@
-#!/usr/bin/env python3
+
 """
-Reverse client (simulación segura).
-Edit SERVER_HOST and SERVER_PORT al inicio si necesitas apuntar a otro servidor.
-Ejecutar: python client.py
+Reverse client (safe simulation).
+Edit SERVER_HOST and SERVER_PORT at the beginning if you need to point to another server.
+Run: python client.py
 """
 import socket
 import json
 import time
 from command_handler import CommandHandler
 
-# Cambia aquí la dirección del servidor si es necesario (client está hard-coded por requisitos)
-SERVER_HOST = '172.20.202.179'  # cambiar por la IP del servidor en la red de laboratorio
+# Change server address and port if needed
+SERVER_HOST = '0.0.0.0'  
 SERVER_PORT = 9000
 
 class Client:
-    def __init__(self, server_host=SERVER_HOST, server_port=SERVER_PORT):
+    def __init__(self, server_host, server_port):
         self.server_host = server_host
         self.server_port = server_port
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.buf = b""
         self.handler = CommandHandler()
 
-    def connect(self):
-        print(f"Connecting to {self.server_host}:{self.server_port}...")
-        self.sock.connect((self.server_host, self.server_port))
-        print("Connected to server")
-        self.loop()
 
-    def send(self, obj: dict):
-        self.sock.sendall((json.dumps(obj) + "\n").encode('utf-8'))
+    def connect_and_run(self):
+        while True:
+            try:
+                print(f"[CLIENT] Connecting to {self.server_host}:{self.server_port}...")
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.connect((self.server_host, self.server_port))
+                print("[CLIENT] Connected.")
+                self.session_loop(s)
+            except Exception as e:
+                print(f"[CLIENT] Connection failed: {e}. Retrying in 3 seconds...")
+                time.sleep(3)
 
-    def recv_message(self):
-        while b"\n" not in self.buf:
-            chunk = self.sock.recv(4096)
-            if not chunk:
-                return None
-            self.buf += chunk
-        line, sep, rest = self.buf.partition(b"\n")
-        self.buf = rest
-        return json.loads(line.decode('utf-8'))
-
-    def loop(self):
-        try:
+    def session_loop(self, s: socket.socket):
+        with s:
+            buffer = ""
             while True:
-                msg = self.recv_message()
-                if msg is None:
-                    print("Server disconnected")
+                data = s.recv(1024)
+                if not data:
+                    print("[CLIENT] Server closed connection.")
                     break
-                # Process only messages of type 'command'
-                if msg.get('type') != 'command':
-                    continue
-                cmd = msg.get('command')
-                cid = msg.get('id')
-                payload = msg.get('payload', {})
-                result = self.handler.handle(cmd, payload)
-                response = {
-                    'type': 'response',
-                    'id': cid,
-                    'status': 'ok' if result['ok'] else 'error',
-                    'output': result.get('output', ''),
-                    'meta': result.get('meta', {})
-                }
-                self.send(response)
-        except KeyboardInterrupt:
-            print('\nInterrupted. Exiting.')
-        finally:
-            self.sock.close()
 
-if __name__ == '__main__':
-    # Bucle de reconexión básico
-    client = Client()
-    while True:
+                buffer += data.decode()
+
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    self.handle_message(line, s)
+
+    def handle_message(self, line, sock):
         try:
-            client.connect()
-            break
+            msg = json.loads(line)
         except Exception as e:
-            print("Connection failed:", e)
-            print("Retrying in 5 seconds...")
-            time.sleep(5)
+            print("[CLIENT] Invalid JSON:", e)
+            return
+
+        if msg.get("type") == "command":
+            command = msg.get("command")
+            payload = msg.get("payload", {})
+            cmd_id = msg.get("id")
+
+            result = self.handler.handle(command, payload)
+
+            response = {
+                "type": "response",
+                "id": cmd_id,
+                "status": "ok" if result["ok"] else "error",
+                "output": result["output"],
+                "meta": result.get("meta", {})
+            }
+
+            sock.sendall((json.dumps(response) + "\n").encode())
+
+if __name__ == "__main__":
+    c = Client(SERVER_HOST, SERVER_PORT)
+    c.connect_and_run()
